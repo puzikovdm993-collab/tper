@@ -1,6 +1,7 @@
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
-import boto3
+from minio import Minio
+from minio.error import S3Error
 import json
 import os
 
@@ -14,18 +15,18 @@ MINIO_SECRET_KEY = os.getenv('MINIO_SECRET_KEY', 'minioadmin')
 MINIO_BUCKET = os.getenv('MINIO_BUCKET', 'json-data')
 
 # Инициализация клиента MinIO
-minio_client = boto3.client(
-    's3',
-    endpoint_url=f'http://{MINIO_ENDPOINT}',
-    aws_access_key_id=MINIO_ACCESS_KEY,
-    aws_secret_access_key=MINIO_SECRET_KEY,
-    use_ssl=False
+minio_client = Minio(
+    MINIO_ENDPOINT,
+    access_key=MINIO_ACCESS_KEY,
+    secret_key=MINIO_SECRET_KEY,
+    secure=False
 )
 
 def ensure_bucket_exists():
     """Убедиться, что бакет существует"""
     try:
-        minio_client.head_bucket(Bucket=MINIO_BUCKET)
+        if not minio_client.bucket_exists(MINIO_BUCKET):
+            minio_client.make_bucket(MINIO_BUCKET)
         return True
     except Exception as e:
         # Если MinIO недоступен, просто игнорируем
@@ -40,8 +41,8 @@ def index():
 def get_data():
     """Получить данные из MinIO"""
     try:
-        response = minio_client.get_object(Bucket=MINIO_BUCKET, Key='data.json')
-        data = json.loads(response['Body'].read().decode('utf-8'))
+        response = minio_client.get_object(MINIO_BUCKET, 'data.json')
+        data = json.loads(response.read().decode('utf-8'))
         return jsonify(data)
     except Exception as e:
         # Если файл не существует или MinIO недоступен, возвращаем пустую структуру
@@ -59,10 +60,11 @@ def save_data():
         # Пытаемся сохранить в MinIO, но не блокируем если недоступен
         try:
             minio_client.put_object(
-                Bucket=MINIO_BUCKET,
-                Key='data.json',
-                Body=json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8'),
-                ContentType='application/json'
+                MINIO_BUCKET,
+                'data.json',
+                json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8'),
+                len(json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8')),
+                content_type='application/json'
             )
         except Exception as e:
             print(f"Warning: Could not save to MinIO - {e}")

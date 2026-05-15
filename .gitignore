@@ -1,35 +1,5 @@
 ```
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Dependencies
-venv/
-.venv/
-.env
-.env.local
-*.env.*
-
-# Logs
-*.log
-
-# Editor
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-
-# Build/dist
-dist/
-build/
-.coverage
-coverage/
-htmlcov/
-
-# OS
-.DS_Store
-Thumbs.db
+# Docker-related files
+Dockerfile
+docker-compose.yml
 ```
