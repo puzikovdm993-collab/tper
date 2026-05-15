@@ -515,6 +515,32 @@
             renderFieldList(data);
         }
 
+        // Синхронизация: сохранение в IndexedDB и отправка в MinIO
+        async function syncData(data) {
+            try {
+                // Сохраняем в IndexedDB
+                await saveToIndexedDB(data);
+                
+                // Отправляем в MinIO
+                const response = await fetch('/api/data', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Ошибка сохранения в MinIO');
+                }
+                
+                updateStatus('connected', 'Данные синхронизированы');
+            } catch (error) {
+                updateStatus('error', 'Ошибка синхронизации');
+                console.error('Sync error:', error);
+            }
+        }
+
         // Добавление поля
         function addField() {
             const key = document.getElementById('fieldKey').value.trim();
@@ -544,14 +570,20 @@
             document.getElementById('fieldKey').value = '';
             document.getElementById('fieldValue').value = '';
             
-            showNotification('Поле добавлено', 'success');
+            showNotification('Поле добавлено и синхронизировано', 'success');
+            
+            // Автоматическая синхронизация
+            syncData(currentData);
         }
 
         // Удаление поля
         function deleteField(key) {
             delete currentData[key];
             updateUI(currentData);
-            showNotification('Поле удалено', 'success');
+            showNotification('Поле удалено и синхронизировано', 'success');
+            
+            // Автоматическая синхронизация
+            syncData(currentData);
         }
 
         // Загрузка из MinIO
@@ -627,13 +659,22 @@
             }
         }
 
-        // Авто-сохранение при изменении
+        // Авто-сохранение при изменении редактора с задержкой (debounce)
+        let syncTimeout = null;
         document.getElementById('jsonEditor').addEventListener('input', async () => {
             const data = parseJSON(document.getElementById('jsonEditor').value);
             if (data) {
                 currentData = data;
                 renderTree(data, document.getElementById('dataTree'));
                 renderFieldList(data);
+                
+                // Debounce: ждем 1 секунду после последнего изменения перед синхронизацией
+                if (syncTimeout) {
+                    clearTimeout(syncTimeout);
+                }
+                syncTimeout = setTimeout(() => {
+                    syncData(data);
+                }, 1000);
             }
         });
 
