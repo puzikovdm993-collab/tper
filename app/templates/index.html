@@ -351,9 +351,13 @@
         const DB_NAME = 'JsonDataDB';
         const DB_VERSION = 1;
         const STORE_NAME = 'jsonData';
+        const PENDING_STORE = 'pendingSync';
 
         let db = null;
         let currentData = {};
+        let isMinIOAvailable = true;
+        let syncQueue = [];
+        let isProcessingQueue = false;
 
         // Открытие/создание IndexedDB
         function openDatabase() {
@@ -373,6 +377,9 @@
                     const database = event.target.result;
                     if (!database.objectStoreNames.contains(STORE_NAME)) {
                         database.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                    }
+                    if (!database.objectStoreNames.contains(PENDING_STORE)) {
+                        database.createObjectStore(PENDING_STORE, { keyPath: 'id', autoIncrement: true });
                     }
                 };
             });
@@ -515,8 +522,136 @@
             renderFieldList(data);
         }
 
+        // Сохранение в очередь отложенной синхронизации
+        function saveToPendingQueue(data) {
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction([PENDING_STORE], 'readwrite');
+                const store = transaction.objectStore(PENDING_STORE);
+                const request = store.add({ 
+                    data: data, 
+                    timestamp: new Date().toISOString(),
+                    status: 'pending'
+                });
+
+                request.onsuccess = () => {
+                    console.log('Данные добавлены в очередь синхронизации');
+                    resolve();
+                };
+
+                request.onerror = () => {
+                    reject('Ошибка сохранения в очередь');
+                };
+            });
+        }
+
+        // Загрузка очереди отложенной синхронизации
+        function loadPendingQueue() {
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction([PENDING_STORE], 'readonly');
+                const store = transaction.objectStore(PENDING_STORE);
+                const request = store.getAll();
+
+                request.onsuccess = () => {
+                    const pendingItems = request.result || [];
+                    // Сортируем по времени создания
+                    pendingItems.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+                    resolve(pendingItems);
+                };
+
+                request.onerror = () => {
+                    reject('Ошибка загрузки очереди');
+                };
+            });
+        }
+
+        // Удаление элемента из очереди после успешной синхронизации
+        function removeFromPendingQueue(id) {
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction([PENDING_STORE], 'readwrite');
+                const store = transaction.objectStore(PENDING_STORE);
+                const request = store.delete(id);
+
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject('Ошибка удаления из очереди');
+            });
+        }
+
+        // Очистка всей очереди
+        function clearPendingQueue() {
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction([PENDING_STORE], 'readwrite');
+                const store = transaction.objectStore(PENDING_STORE);
+                const request = store.clear();
+
+                request.onsuccess = () => resolve();
+                request.onerror = () => reject('Ошибка очистки очереди');
+            });
+        }
+
+        // Обработка очереди синхронизации
+        async function processSyncQueue() {
+            if (isProcessingQueue) return;
+            
+            isProcessingQueue = true;
+            
+            try {
+                const pendingItems = await loadPendingQueue();
+                
+                if (pendingItems.length === 0) {
+                    isProcessingQueue = false;
+                    return;
+                }
+
+                console.log(`Обработка ${pendingItems.length} элементов очереди синхронизации...`);
+                updateStatus('synced', `Синхронизация ${pendingItems.length} изменений...`);
+
+                for (const item of pendingItems) {
+                    try {
+                        const response = await fetch('/api/data', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(item.data)
+                        });
+
+                        if (response.ok) {
+                            await removeFromPendingQueue(item.id);
+                            console.log(`Элемент ${item.id} успешно синхронизирован`);
+                        } else {
+                            throw new Error('Ошибка сервера');
+                        }
+                    } catch (error) {
+                        console.error(`Не удалось синхронизировать элемент ${item.id}:`, error);
+                        // Оставляем в очереди для повторной попытки
+                        break;
+                    }
+                }
+
+                // Проверяем доступность MinIO
+                const testResponse = await fetch('/api/data', { method: 'GET' });
+                if (testResponse.ok) {
+                    isMinIOAvailable = true;
+                    updateStatus('connected', 'Данные синхронизированы');
+                    showNotification('Все изменения синхронизированы с MinIO', 'success');
+                    
+                    // Очищаем очередь если все успешно
+                    const remainingItems = await loadPendingQueue();
+                    if (remainingItems.length === 0) {
+                        await clearPendingQueue();
+                    }
+                }
+            } catch (error) {
+                isMinIOAvailable = false;
+                updateStatus('error', 'MinIO недоступен. Изменения в очереди.');
+                console.error('Ошибка обработки очереди:', error);
+            } finally {
+                isProcessingQueue = false;
+            }
+        }
+
         // Синхронизация: сохранение в IndexedDB и отправка в MinIO
-        async function syncData(data) {
+        async function syncData(data, addToQueue = true) {
             try {
                 // Сохраняем в IndexedDB
                 await saveToIndexedDB(data);
@@ -534,10 +669,27 @@
                     throw new Error('Ошибка сохранения в MinIO');
                 }
                 
+                isMinIOAvailable = true;
                 updateStatus('connected', 'Данные синхронизированы');
+                
+                // Если были отложенные изменения, пытаемся их синхронизировать
+                if (addToQueue) {
+                    await processSyncQueue();
+                }
             } catch (error) {
-                updateStatus('error', 'Ошибка синхронизации');
+                isMinIOAvailable = false;
+                updateStatus('error', 'MinIO недоступен. Изменения сохранены локально.');
                 console.error('Sync error:', error);
+                
+                // Добавляем в очередь отложенной синхронизации
+                if (addToQueue) {
+                    try {
+                        await saveToPendingQueue(data);
+                        showNotification('MinIO недоступен. Изменения добавлены в очередь синхронизации.', 'info');
+                    } catch (queueError) {
+                        console.error('Ошибка добавления в очередь:', queueError);
+                    }
+                }
             }
         }
 
@@ -682,7 +834,6 @@
         async function init() {
             try {
                 await openDatabase();
-                updateStatus('connected', 'Готов к работе');
                 
                 // Попытка загрузить из IndexedDB при старте
                 const data = await loadFromIndexedDBData();
@@ -690,6 +841,29 @@
                     updateUI(data);
                 } else {
                     updateUI({});
+                }
+                
+                // Проверяем наличие отложенных изменений и пытаемся синхронизировать
+                const pendingItems = await loadPendingQueue();
+                if (pendingItems.length > 0) {
+                    console.log(`Найдено ${pendingItems.length} отложенных изменений. Попытка синхронизации...`);
+                    showNotification(`Найдено ${pendingItems.length} отложенных изменений. Синхронизация...`, 'info');
+                    setTimeout(() => processSyncQueue(), 1000);
+                } else {
+                    // Проверка доступности MinIO
+                    try {
+                        const testResponse = await fetch('/api/data', { method: 'GET' });
+                        if (testResponse.ok) {
+                            isMinIOAvailable = true;
+                            updateStatus('connected', 'Готов к работе');
+                        } else {
+                            isMinIOAvailable = false;
+                            updateStatus('error', 'MinIO недоступен');
+                        }
+                    } catch (e) {
+                        isMinIOAvailable = false;
+                        updateStatus('error', 'MinIO недоступен');
+                    }
                 }
                 
                 showNotification('Приложение готово к работе', 'success');
@@ -700,6 +874,29 @@
         }
 
         init();
+        
+        // Периодическая проверка доступности MinIO и синхронизация очереди каждые 30 секунд
+        setInterval(async () => {
+            if (!isMinIOAvailable) {
+                const pendingItems = await loadPendingQueue();
+                if (pendingItems.length > 0) {
+                    console.log('Периодическая попытка синхронизации...');
+                    processSyncQueue();
+                } else {
+                    // Проверяем, восстановилось ли соединение
+                    try {
+                        const testResponse = await fetch('/api/data', { method: 'GET' });
+                        if (testResponse.ok) {
+                            isMinIOAvailable = true;
+                            updateStatus('connected', 'Готов к работе');
+                            console.log('Соединение с MinIO восстановлено');
+                        }
+                    } catch (e) {
+                        // MinIO всё ещё недоступен
+                    }
+                }
+            }
+        }, 30000);
     </script>
 </body>
 </html>
