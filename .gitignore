@@ -1,5 +1,54 @@
-```
-# Docker-related files
-Dockerfile
-docker-compose.yml
+```python
+# Compiled and build artifacts
+*.pyc
+__pycache__/
+*.o
+*.obj
+*.so
+*.dll
+*.exe
+*.class
+*.out
+
+# Dependencies
+.venv/
+venv/
+env/
+.env
+.env.local
+.env.*
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Editors
+.vscode/
+.idea/
+*.pyc
+*.pyo
+*.pyd
+*.py~
+*.bak
+*.swp
+*.swo
+
+# Build and distribution
+dist/
+build/
+target/
+*.egg-info/
+
+# Testing
+.coverage
+htmlcov/
+.coverage.*
+.nox/
+.tox/
+
+# OS generated files
+.DS_Store
+Thumbs.db
 ```

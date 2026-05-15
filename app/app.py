@@ -4,6 +4,7 @@ from minio import Minio
 from minio.error import S3Error
 import json
 import os
+import io
 
 app = Flask(__name__)
 CORS(app)
@@ -59,11 +60,12 @@ def save_data():
         
         # Пытаемся сохранить в MinIO, но не блокируем если недоступен
         try:
+            json_data = json.dumps(data, indent=2, ensure_ascii=False)
             minio_client.put_object(
                 MINIO_BUCKET,
                 'data.json',
-                json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8'),
-                len(json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8')),
+                io.BytesIO(json_data.encode('utf-8')),
+                len(json_data.encode('utf-8')),
                 content_type='application/json'
             )
         except Exception as e:
